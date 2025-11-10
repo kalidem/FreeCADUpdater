@@ -63,18 +63,99 @@ def save_config(cfg):
     except Exception:
         pass
 
+def _win_long_path(p):
+    p = os.path.abspath(p)
+    if os.name == "nt":
+        # avoid double prefix
+        if not p.startswith(r"\\?\\" ):
+            # handle UNC paths
+            if p.startswith(r"\\"):
+                return r"\\?\UNC\\" + p.lstrip(r"\\")
+            return r"\\?\ " + p
+    return p
+
 def copy_contents(src_dir, dst_dir):
+    """
+    Copy tree from src_dir into dst_dir. Handles very long Windows paths and
+    falls back to a manual copy if shutil.copy2 fails.
+    """
     for root, dirs, files in os.walk(src_dir):
         rel = os.path.relpath(root, src_dir)
         dest_root = os.path.join(dst_dir, rel) if rel != "." else dst_dir
-        os.makedirs(dest_root, exist_ok=True)
-        for f in files:
-            src_file = os.path.join(root, f)
-            dst_file = os.path.join(dest_root, f)
+        try:
+            os.makedirs(dest_root, exist_ok=True)
+        except Exception:
+            # try long-path mkdir on Windows
+            if os.name == "nt":
+                try:
+                    os.makedirs(_win_long_path(dest_root), exist_ok=True)
+                except Exception as e:
+                    raise Exception(f"Error creating directory {dest_root}: {e}")
+            else:
+                raise
+
+        for fname in files:
+            src_file = os.path.join(root, fname)
+            dst_file = os.path.join(dest_root, fname)
+
+            # Ensure dst parent exists (again, for safety)
+            try:
+                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+            except Exception:
+                if os.name == "nt":
+                    try:
+                        os.makedirs(_win_long_path(os.path.dirname(dst_file)), exist_ok=True)
+                    except Exception as e:
+                        raise Exception(f"Error creating directory {os.path.dirname(dst_file)}: {e}")
+                else:
+                    raise
+
+            # Try a normal copy first; fall back to long-path or manual copy
             try:
                 shutil.copy2(src_file, dst_file)
-            except Exception as e:
-                raise Exception(f"Error copying {src_file} -> {dst_file}: {e}")
+            except FileNotFoundError as fnf:
+                # likely long path issue on Windows: retry with \\?\ prefix
+                if os.name == "nt":
+                    try:
+                        s = _win_long_path(src_file)
+                        d = _win_long_path(dst_file)
+                        shutil.copy2(s, d)
+                    except Exception as e:
+                        # final fallback: manual copy with long-path handling
+                        try:
+                            with open(_win_long_path(src_file), "rb") as sf, open(_win_long_path(dst_file), "wb") as df:
+                                shutil.copyfileobj(sf, df)
+                            try:
+                                shutil.copystat(_win_long_path(src_file), _win_long_path(dst_file))
+                            except Exception:
+                                pass
+                        except Exception as e2:
+                            raise Exception(f"Error copying {src_file} -> {dst_file}: {e2}") from e2
+                else:
+                    raise Exception(f"Error copying {src_file} -> {dst_file}: {fnf}") from fnf
+            except OSError as oe:
+                # fallback to manual copy (permission/other issues)
+                try:
+                    with open(src_file, "rb") as sf, open(dst_file, "wb") as df:
+                        shutil.copyfileobj(sf, df)
+                    try:
+                        shutil.copystat(src_file, dst_file)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    # Try long-path manual copy on Windows
+                    if os.name == "nt":
+                        try:
+                            with open(_win_long_path(src_file), "rb") as sf, open(_win_long_path(dst_file), "wb") as df:
+                                shutil.copyfileobj(sf, df)
+                            try:
+                                shutil.copystat(_win_long_path(src_file), _win_long_path(dst_file))
+                            except Exception:
+                                pass
+                        except Exception as e2:
+                            raise Exception(f"Error copying {src_file} -> {dst_file}: {e2}") from e2
+                    else:
+                        raise Exception(f"Error copying {src_file} -> {dst_file}: {oe}") from oe
 
 def download_and_extract(asset, install_dir, progress_callback=None):
     if not install_dir:

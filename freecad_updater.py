@@ -64,15 +64,24 @@ def save_config(cfg):
         pass
 
 def _win_long_path(p):
+    r"""
+    Return an absolute path suitable for Win32 long-path APIs.
+    - Non-Windows: return absolute path unchanged.
+    - Already-prefixed paths are returned unchanged.
+    - UNC paths (starting with \\) become \\?\UNC\server\share\...
+    - Normal paths become \\?\C:\...
+    """
     p = os.path.abspath(p)
-    if os.name == "nt":
-        # avoid double prefix
-        if not p.startswith(r"\\?\\" ):
-            # handle UNC paths
-            if p.startswith(r"\\"):
-                return r"\\?\UNC\\" + p.lstrip(r"\\")
-            return r"\\?\ " + p
-    return p
+    if os.name != "nt":
+        return p
+    # already a long path
+    if p.startswith('\\\\?\\'):
+        return p
+    # UNC path -> \\?\UNC\server\share
+    if p.startswith('\\\\'):
+        return r'\\?\UNC\\' + p.lstrip('\\')
+    # normal path -> \\?\C:\...
+    return r'\\?\\' + p
 
 def copy_contents(src_dir, dst_dir):
     """
